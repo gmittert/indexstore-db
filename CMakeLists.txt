@@ -1,0 +1,71 @@
+cmake_minimum_required(VERSION 3.4.3)
+
+list(APPEND CMAKE_MODULE_PATH
+     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+include(SwiftSupport)
+
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_C_COMPILER clang-cl)
+set(CMAKE_CXX_COMPILER clang-cl)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+
+if(CMAKE_SYSTEM_NAME STREQUAL Android OR CMAKE_SYSTEM_NAME STREQUAL Linux)
+  set(deployment_target -DDEPLOYMENT_TARGET_LINUX)
+elseif(CMAKE_SYSTEM_NAME STREQUAL Darwin)
+  set(deployment_target -DDEPLOYMENT_TARGET_MACOSX)
+elseif(CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
+  set(deployment_target -DDEPLOYMENT_TARGET_FREEBSD)
+elseif(CMAKE_SYSTEM_NAME STREQUAL Windows)
+  set(deployment_target -DDEPLOYMENT_TARGET_WINDOWS)
+  set(WORKAROUND_SR9138 -Xlinker;-ignore:4217)
+  set(WORKAROUND_SR9995 -Xlinker;-nodefaultlib:libcmt)
+endif()
+
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fblocks")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fblocks")
+add_compile_definitions(LLVM_ENABLE_CRASH_DUMPS=false)
+
+option(CMAKE_SWIFT_COMPILER "Path to swift compiler" "")
+option(INDEXSTOREDB_PATH_TO_LIBDISPATCH_SOURCE "Path to libdispatch source" "S:/swift-corelibs-libdispatch")
+option(INDEXSTOREDB_PATH_TO_LIBDISPATCH_BUILD "Path to libdispatch build" "S:/libdispatch")
+option(INDEXSTOREDB_PATH_TO_FOUNDATION_SOURCE "Path to foundation source" "S:/swift-corelibs-foundation")
+option(INDEXSTOREDB_PATH_TO_FOUNDATION_BUILD "Path to foundation build" "S:/foundation")
+option(INDEXSTOREDB_PATH_TO_XCTEST_SOURCE "Path to foundation source" "")
+option(INDEXSTOREDB_PATH_TO_XCTEST_BUILD "Path to foundation build" "")
+
+set(swift_dir swift)
+string(TOLOWER ${CMAKE_SYSTEM_NAME} swift_os)
+
+set(libdispatch_cflags -I;${INDEXSTOREDB_PATH_TO_LIBDISPATCH_SOURCE};-I;${INDEXSTOREDB_PATH_TO_LIBDISPATCH_BUILD}/src/swift;-Xcc;-fblocks)
+set(libdispatch_ldflags -L;${INDEXSTOREDB_PATH_TO_LIBDISPATCH_BUILD};-L;${INDEXSTOREDB_PATH_TO_LIBDISPATCH_BUILD}/src;-ldispatch;-lswiftDispatch)
+set(foundation_cflags -I;${INDEXSTOREDB_PATH_TO_FOUNDATION_SOURCE};-I;${INDEXSTOREDB_PATH_TO_FOUNDATION_BUILD}/swift;-Fsystem ${INDEXSTOREDB_PATH_TO_FOUNDATION_BUILD})
+set(foundation_ldflags -L;${INDEXSTOREDB_PATH_TO_FOUNDATION_BUILD};-lfoundation)
+set(xctest_cflags -I;${INDEXSTOREDB_PATH_TO_XCTEST_SOURCE};-I;${INDEXSTOREDB_PATH_TO_XCTEST_BUILD}/swift)
+set(xctest_ldflags -L;${INDEXSTOREDB_PATH_TO_XCTEST_BUILD};-lXCTest)
+
+
+include_directories(${INDEXSTOREDB_PATH_TO_LIBDISPATCH_SOURCE})
+include_directories(${INDEXSTOREDB_PATH_TO_XCTEST_SOURCE})
+include_directories(${INDEXSTOREDB_PATH_TO_XCTEST_BUILD}/swift)
+link_directories(${INDEXSTOREDB_PATH_TO_XCTEST_BUILD})
+link_directories(${INDEXSTOREDB_PATH_TO_LIBDISPATCH_BUILD})
+link_directories(${INDEXSTOREDB_PATH_TO_LIBDISPATCH_BUILD}/src)
+include_directories(S:\\compiler-rt\\lib\\BlocksRuntime)
+include_directories(include)
+
+add_subdirectory(Sources/IndexStoreDB)
+add_subdirectory(Sources/ISDBTibs)
+add_subdirectory(Sources/tibs)
+add_subdirectory(Sources/ISDBTestSupport)
+add_subdirectory(lib/CIndexStoreDB)
+add_subdirectory(lib/Core)
+add_subdirectory(lib/Database)
+add_subdirectory(lib/Index)
+add_subdirectory(lib/LLVMSupport)
+add_subdirectory(lib/Support)
+add_subdirectory(Tests)
+
