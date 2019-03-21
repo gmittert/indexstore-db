@@ -1,0 +1,289 @@
+#!/usr/bin/env python
+
+# This is a helper script for importing the things we use from LLVM.
+#
+# NOTE: We have slightly modified copies of some of the files, to reduce the
+# dependency surface area, so if you run this to update the sources, please
+# examine the diffs to remove things that don't make sense.
+
+import errno
+import optparse
+import os
+import re
+import shutil
+import sys
+import subprocess
+
+# ADT types.
+ADT_imports = ['iterator', 'iterator_range', 'APFloat', 'APInt', 'APSInt',
+               'AllocatorList', 'EpochTracker', 'Hashing', 'None', 'Optional',
+               'Statistic', 'StringExtras', 'STLExtras']
+
+# ADT basic data structures.
+ADT_imports += ['ArrayRef', 'Bit', 'PointerIntPair', 'PointerUnion', 'StringRef',
+                'StringSwitch', 'Triple', 'Twine', 'IntrusiveRefCntPtr',
+                'ilist', 'ilist_base', 'ilist_node', 'ilist_node_base',
+                'ilist_node_options', 'simple_ilist', 'ilist_iterator']
+
+# ADT Mapping structures.
+ADT_imports += ['DenseSet', 'DenseMap', 'DenseMapInfo', 'FoldingSet', 'StringMap', 'StringSet']
+
+# ADT "Small" structures.
+ADT_imports += ['SmallPtrSet', 'SmallSet', 'SmallString', 'SmallVector']
+
+# ADT Algorithms.
+ADT_imports += ['edit_distance']
+
+Demangle_imports = ['Demangle', 'ItaniumDemangle', 'MicrosoftDemangle',
+                    'Compiler', 'MicrosoftDemangleNodes', 'StringView',
+                    'Utility']
+
+# Support types and infrastructure.
+Support_imports = [ 'AlignOf', 'Allocator', 'Atomic', 'CBindingWrapping',
+                    'Casting', 'Compiler', 'CommandLine', 'ConvertUTF',
+                    'ConvertUTFWrapper', 'DJB', 'Endian', 'Errno', 'Error',
+                    'ErrorHandling', 'Errc', 'ErrorOr', 'Format',
+                    'ManagedStatic', 'MathExtras', 'MD5', 'Mutex',
+                    'MutexGuard', 'Memory', 'MemoryBuffer',
+                    'PointerLikeTypeTraits', 'Regex', 'Recycler',
+                    'ReverseIteration', 'SmallVectorMemoryBuffer',
+                    'StringSaver', 'SwapByteOrder', 'Timer',
+                    'Threading', 'Unicode', 'UniqueLock', 'Unix',
+                    'WindowsError', 'WindowsSupport', 'Valgrind',
+                    'circular_raw_ostream', 'raw_ostream', 'type_traits']
+
+# Stuff we don't want, but have to pull in.
+Support_imports += [ 'APFloat', 'ARMTargetParser', 'AArch64TargetParser',
+                     'ARMBuildAttributes', 'Chrono', 'DataTypes', 'Debug',
+                     'FileSystem', 'FileUtilities', 'FormatAdapters',
+                     'FormatCommon', 'FormatProviders',
+                     'FormatVariadic','FormatVariadicDetails', 'Host',
+                     'LineIterator', 'Locale', 'MemAlloc', 'NativeFormatting',
+                     'Options', 'Path', 'Process', 'Program', 'SMLoc',
+                     'SourceMgr', 'Signals', 'Support', 'TargetParser',
+                     'Types', 'Unicode', 'UnicodeCaseFold',
+                     'UnicodeCharRanges', 'VersionTuple', 'WithColor', 'X86TargetParser',
+                     'regex_impl', 'regcomp', 'regutils', 'regex2', 'regerror', 'regexec', 'regfree', 'regstrlcpy', 'regengine']
+
+# Dependencies from llvm-c needed by Support.
+C_imports = ['Types', 'DataTypes', 'Support', 'ErrorHandling']
+
+# Support data structures.
+Support_imports += ['YAMLParser', 'YAMLTraits']
+
+# Source files to exclude.
+Support_source_excludes = set([])
+
+llvm_srcroot = None
+sourcekit_srcroot = None
+
+def note(msg):
+    msg = msg.replace(llvm_srcroot, "<LLVM>")
+    msg = msg.replace(sourcekit_srcroot, "<INDEXSTOREDB>")
+    print >>sys.stderr, "note: %s" % (msg,)
+
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+        note("mkdir -p %r" % (path,))
+    except OSError as e:
+        if e.errno != errno.EEXIST:
+            raise
+
+def copyfile(src, dst):
+    note("cp %r %r" % (src, dst))
+    shutil.copyfile(src, dst)
+
+def includes_prefix(source, include_dir):
+    defs = subprocess.check_output([
+        'clang', '-std=c++14', '-dM', '-E',
+        '-I', include_dir,
+        '-x', 'c++', source])
+
+    return "INDEXSTOREDB_PREFIX_H" in defs
+
+def is_llvm_leaf_source(source):
+    # AIXDataTypes is a false negative.
+    return subprocess.call("grep '# *include *\"llvm' %s | grep --quiet -v AIXDataTypes" % source, shell=True)
+
+def add_prefix(str):
+    snippet = '#include "llvm/Config/indexstoredb-prefix.h"\n'
+
+    m = re.search(r'#ifndef *([A-Za-z_]*)\n#define *\1 *\n', str)
+    if m:
+        return str[:m.end()] + '\n' + snippet + str[m.end():]
+
+    i = str.find(r'#include')
+    if i != -1:
+        return str[:i] + snippet + str[i:]
+
+    # If we ever hit this, we could find the end of the copyright header comment.
+    print >>sys.stderr, 'error: could not find existing #include or header guards'
+    sys.exit(1)
+
+def maybe_add_prefix(source, include_dir):
+    ext = os.path.splitext(source)[1]
+    if not ext in ['.h', '.cpp', '.c']:
+        return
+    if not is_llvm_leaf_source(source):
+        # Skip files that include other llvm headers; we will add the include to
+        # the leaf header.
+        return
+    if includes_prefix(source, include_dir):
+        # Skip files that already include the prefix header.
+        return
+
+    note("adding prefix header to %r" % source)
+    with open(source, 'r+') as file:
+        new = add_prefix(file.read())
+        file.seek(0)
+        file.write(new)
+        file.truncate()
+
+def main():
+    parser = optparse.OptionParser("usage: %prog <llvm-source-path>")
+    (opts, args) = parser.parse_args()
+
+    if len(args) != 1:
+        parser.error("unexpected number of arguments")
+
+    global llvm_srcroot, sourcekit_srcroot
+    llvm_srcroot, = args
+    sourcekit_srcroot = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    # Remove the old llvm import
+    sourcekit_llvm_include = os.path.join(sourcekit_srcroot, 'include', 'llvm')
+    sourcekit_llvm_lib = os.path.join(sourcekit_srcroot, 'lib', 'LLVMSupport')
+    if os.path.exists(sourcekit_llvm_include):
+        shutil.rmtree(sourcekit_llvm_include)
+    if os.path.exists(sourcekit_llvm_lib):
+        shutil.rmtree(sourcekit_llvm_lib)
+
+    # Add the platform specific config files
+    #
+    # NOTE: If you're updating to a newer llvm, you may have to manually merge
+    # these with the newer version produced by the llvm build
+    sourcekit_llvm_config = os.path.join(sourcekit_srcroot, 'Utilities', 'import-llvm', 'include', 'llvm', 'Config')
+    shutil.copytree(sourcekit_llvm_config, os.path.join(sourcekit_llvm_include, 'Config'))
+
+    def import_header(dir, name):
+        src = os.path.join(llvm_srcroot, 'include', 'llvm', dir, name)
+        c_src = os.path.join(llvm_srcroot, 'include', 'llvm-c', name)
+        if os.path.exists(src):
+            dst = os.path.join(sourcekit_srcroot, 'include', 'llvm', dir, name)
+            mkdir_p(os.path.dirname(dst))
+            copyfile(src, dst)
+        if os.path.exists(c_src):
+            dst = os.path.join(sourcekit_srcroot, 'include', 'llvm-c', name)
+            mkdir_p(os.path.dirname(dst))
+            copyfile(c_src, dst)
+
+    def import_c_header(name):
+        src = os.path.join(llvm_srcroot, 'include', 'llvm-c', name)
+        if os.path.exists(src):
+            dst = os.path.join(sourcekit_srcroot, 'include', 'llvm-c', name)
+            mkdir_p(os.path.dirname(dst))
+            copyfile(src, dst)
+
+    def import_source(dir, name):
+        src = os.path.join(llvm_srcroot, 'lib', dir, name)
+        if os.path.exists(src):
+            dst = os.path.join(sourcekit_srcroot, 'lib', 'LLVMSupport', dir, name)
+            mkdir_p(os.path.dirname(dst))
+            copyfile(src, dst)
+
+    print "note: importing from %r to %r" % (llvm_srcroot, sourcekit_srcroot)
+
+    for name in ADT_imports:
+        import_header('ADT', name+'.h')
+        if name not in Support_source_excludes:
+            import_source('Support', name+'.c')
+            import_source('Support', name+'.cpp')
+    for name in Support_imports:
+        import_header('Support', name+'.h')
+        import_header('Support', name+'.def')
+        if name not in Support_source_excludes:
+            import_source('Support', name+'.c')
+            import_source('Support', name+'.h')
+            import_source('Support', name+'.cpp')
+            import_source('Support', name+'.def')
+            import_source('Support', name+'.inc')
+            import_source('Support', os.path.join('Unix', name+'.h'))
+            import_source('Support', os.path.join('Unix', name+'.inc'))
+            import_source('Support', os.path.join('Windows', name+'.h'))
+            import_source('Support', os.path.join('Windows', name+'.inc'))
+    for name in Demangle_imports:
+        import_header('Demangle', name+'.h')
+        import_source('Demangle', name+'.cpp')
+
+    # Copy over all of demangle
+    demangle_src = os.path.join(llvm_srcroot, 'lib', 'Demangle')
+    demangle_dest = os.path.join(sourcekit_srcroot, 'lib', 'LLVMSupport', 'Demangle')
+    #shutil.copytree(demangle_src, demangle_dest)
+
+    for name in C_imports:
+        import_c_header(name + '.h')
+
+    print ""
+    print "Adding prefix header includes"
+
+    base_dirs = [
+        os.path.join(sourcekit_srcroot, 'include', 'llvm'),
+        os.path.join(sourcekit_srcroot, 'include', 'llvm-c'),
+        os.path.join(sourcekit_srcroot, 'lib', 'LLVMSupport'),
+    ]
+
+    include_dir = os.path.join(sourcekit_srcroot, 'include')
+
+    # Create Symlinks for SwiftPM include directory resolution
+    os.makedirs(os.path.join(sourcekit_llvm_lib, 'Support', 'include', 'llvm'))
+    os.makedirs(os.path.join(sourcekit_llvm_lib, 'Demangle', 'include'))
+    os.makedirs(os.path.join(sourcekit_llvm_lib, 'include'))
+    os.makedirs(os.path.join(sourcekit_llvm_include, 'Demangle', 'include'))
+    os.symlink(os.path.join('..', '..', '..', '..', '..', 'include', 'llvm', 'ADT'),
+               os.path.join(sourcekit_llvm_lib, 'Support', 'include', 'llvm', 'ADT'))
+    os.symlink(os.path.join('..', '..', '..', '..', '..', 'include', 'llvm', 'Config'),
+               os.path.join(sourcekit_llvm_lib, 'Support', 'include', 'llvm', 'Config'))
+    os.symlink(os.path.join('..', '..', '..', '..', '..', 'include', 'llvm', 'Support'),
+               os.path.join(sourcekit_llvm_lib, 'Support', 'include', 'llvm', 'Support'))
+    os.symlink(os.path.join('..', '..', '..', '..', 'include', 'llvm-c'),
+               os.path.join(sourcekit_llvm_lib, 'Support', 'include', 'llvm-c'))
+    os.symlink(os.path.join('..', '..', '..', '..', 'include', 'llvm'),
+               os.path.join(sourcekit_llvm_lib, 'Demangle', 'include', 'llvm'))
+    os.symlink(os.path.join('..', '..', '..', 'llvm'),
+               os.path.join(sourcekit_llvm_include, 'Demangle', 'include', 'llvm'))
+    os.symlink(os.path.join('..', '..', '..', 'include', 'llvm'),
+               os.path.join(sourcekit_llvm_lib, 'include', 'llvm'))
+    os.symlink(os.path.join('..', '..', '..', 'include', 'llvm-c'),
+               os.path.join(sourcekit_llvm_lib, 'include', 'llvm-c'))
+
+    copyfile(os.path.join(sourcekit_srcroot, 'Utilities', 'import-llvm', 'lib', 'LLVMSupport', 'include', 'module.modulemap'),
+             os.path.join(sourcekit_srcroot, 'lib', 'LLVMSupport', 'include', 'module.modulemap'))
+
+    copyfile(os.path.join(sourcekit_srcroot, 'Utilities', 'import-llvm', 'include', 'llvm', 'ADT', 'OptionSet.h'),
+             os.path.join(sourcekit_srcroot, 'include', 'llvm', 'ADT', 'OptionSet.h'))
+
+    # AArch64TargetParser uses a relative path to find the .def file, so we
+    # copy this one to the expected location :(
+    def_location = os.path.join(sourcekit_srcroot, 'lib', 'include', 'llvm', 'Support')
+    if os.path.exists(def_location):
+        shutil.rmtree(def_location)
+    os.makedirs(def_location)
+    copyfile(os.path.join(sourcekit_srcroot, 'include', 'llvm', 'Support', 'AArch64TargetParser.def'),
+             os.path.join(def_location, 'AArch64TargetParser.def'))
+
+    # Process.cpp uses LLVM_ENABLE_CRASH_DUMPS which is usually set in CMake.
+    # Since the Linux and Darwin builds use SwiftPM, this doesn't get set.
+    # We'll modify the file to set it via proprocessor
+    process_cpp = os.path.join(sourcekit_srcroot, 'lib', 'LLVMSupport', 'Support', 'Process.cpp')
+    with open(process_cpp, 'r+') as f:
+        content = f.read()
+        f.seek(0, 0)
+        f.write('#define LLVM_ENABLE_CRASH_DUMPS false\n' + content)
+    for base in base_dirs:
+        for root, dirs, files in os.walk(base):
+            for file in files:
+                maybe_add_prefix(os.path.join(root, file), include_dir)
+
+if __name__ == '__main__':
+    main()
