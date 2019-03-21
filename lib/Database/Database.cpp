@@ -237,7 +237,8 @@ UnitInfo Database::Implementation::getUnitInfo(IDCode unitCode, lmdb::txn &Txn) 
   ptr += sizeof(UnitInfo::Provider)*providerDepends.size();
   unitName = StringRef(ptr, infoData.NameLength);
 
-  llvm::sys::TimeValue modTime(infoData.Seconds, infoData.Nanoseconds);
+  llvm::sys::TimePoint<> modTime = llvm::sys::toTimePoint(infoData.Seconds);
+  modTime += std::chrono::nanoseconds(infoData.Nanoseconds);
   return UnitInfo{ unitName, unitCode, modTime,
     infoData.OutFileCode, infoData.MainFileCode, infoData.SysrootCode, infoData.TargetCode,
     infoData.HasMainFile, infoData.HasSysroot, infoData.IsSystem,
