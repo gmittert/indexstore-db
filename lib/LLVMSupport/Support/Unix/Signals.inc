@@ -36,6 +36,7 @@
 #include "Unix.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/config.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Format.h"
@@ -46,6 +47,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <string>
+#include <sysexits.h>
 #ifdef HAVE_BACKTRACE
 # include BACKTRACE_HEADER         // For backtrace().
 #endif
@@ -333,6 +335,10 @@ static RETSIGTYPE SignalHandler(int Sig) {
       if (auto OldInterruptFunction = InterruptFunction.exchange(nullptr))
         return OldInterruptFunction();
 
+      // Send a special return code that drivers can check for, from sysexits.h.
+      if (Sig == SIGPIPE)
+        exit(EX_IOERR);
+
       raise(Sig);   // Execute the default handler.
       return;
    }
@@ -528,7 +534,8 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
 
     if (dlinfo.dli_sname != nullptr) {
       OS << ' ';
-      char* d = nullptr;//itaniumDemangle(dlinfo.dli_sname, nullptr, nullptr, &res);
+      int res;
+      char* d = itaniumDemangle(dlinfo.dli_sname, nullptr, nullptr, &res);
       if (!d) OS << dlinfo.dli_sname;
       else    OS << d;
       free(d);
