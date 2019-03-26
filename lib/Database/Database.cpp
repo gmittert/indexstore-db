@@ -15,6 +15,7 @@
 #include "IndexStoreDB/Database/UnitInfo.h"
 #include "IndexStoreDB/Support/Logging.h"
 #include "IndexStoreDB/Support/Path.h"
+#include "IndexStoreDB/Support/CrossPlatform.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringMap.h"
@@ -97,7 +98,7 @@ Database::Implementation::create(StringRef path, bool readonly, Optional<size_t>
   SmallString<128> savedPathBuf = versionPath;
   llvm::sys::path::append(savedPathBuf, "saved");
   SmallString<128> processPathBuf = versionPath;
-  llvm::raw_svector_ostream(processPathBuf) << "/p" << getpid();
+  llvm::raw_svector_ostream(processPathBuf) << "/p" << xplat::getpid();
 
   bool existingDB = true;
 
@@ -268,12 +269,6 @@ void Database::Implementation::increaseMapSize() {
   LOG_INFO_FUNC(High, "increased lmdb map size to: " << MapSize);
 }
 
-static bool isProcessStillExecuting(pid_t PID) {
-  if (getsid(PID) == -1 && errno == ESRCH)
-    return false;
-  return true;
-}
-
 // This runs in a background priority queue.
 static void cleanupDiscardedDBsImpl(StringRef versionedPath) {
   using namespace llvm::sys::fs;
@@ -282,7 +277,7 @@ static void cleanupDiscardedDBsImpl(StringRef versionedPath) {
   // A directory is dead if it has been marked with the suffix "-dead" or if it
   // has the name "p<PID>" where process PID is no longer running.
 
-  pid_t currPID = getpid();
+  indexstorePid_t currPID = xplat::getpid();
 
   std::error_code EC;
   directory_iterator Begin(versionedPath, EC);
@@ -291,7 +286,7 @@ static void cleanupDiscardedDBsImpl(StringRef versionedPath) {
     auto &Item = *Begin;
     StringRef currPath = Item.path();
 
-    auto shouldRemove = [](StringRef fullpath, pid_t currPID) -> bool {
+    auto shouldRemove = [](StringRef fullpath, indexstorePid_t currPID) -> bool {
       StringRef path = llvm::sys::path::filename(fullpath);
       if (path.endswith(DeadProcessDBSuffix))
         return true;
@@ -300,9 +295,9 @@ static void cleanupDiscardedDBsImpl(StringRef versionedPath) {
       size_t pathPID;
       if (path.substr(1).getAsInteger(10, pathPID))
         return false;
-      if (pathPID == currPID)
+      if ((indexstorePid_t)pathPID == currPID)
         return false;
-      return !isProcessStillExecuting(pathPID);
+      return !xplat::isProcessStillExecuting((indexstorePid_t)pathPID);
     };
 
     if (shouldRemove(currPath, currPID)) {

@@ -11,19 +11,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "IndexStoreDB/Support/Path.h"
+#include "IndexStoreDB/Support/CrossPlatform.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Mutex.h"
+#if defined(_WIN32)
+#include <Windows.h>
+#else
 #include <unistd.h>
+#endif
 #include <limits.h>
 #include <stdlib.h>
 
 using namespace IndexStoreDB;
 
 static StringRef getCanonicalPath(const char *Path, char *PathBuf) {
-  if (const char *path = realpath(Path, PathBuf))
+  if (const char *path = xplat::realpath(Path, PathBuf))
     return path;
   return StringRef();
 }
