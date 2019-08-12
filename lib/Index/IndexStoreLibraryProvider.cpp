@@ -44,9 +44,13 @@ IndexStoreLibraryRef GlobalIndexStoreLibraryProvider::getLibraryForStorePath(Str
 IndexStoreLibraryRef index::loadIndexStoreLibrary(std::string dylibPath,
                                                   std::string &error) {
 #if defined(_WIN32)
+  // If we are given an RFC1808 path (/c:/foo/bar), drop the leading slash
+  std::string fileSystemRepresentation = !dylibPath.empty() && dylibPath[0] == '/'
+    ? dylibPath.substr(1)
+    : dylibPath;
   llvm::SmallVector<llvm::UTF16, 30> u16Path;
-  if (!convertUTF8ToUTF16String(dylibPath, u16Path)) {
-    error += "Failed to convert path: " + dylibPath + " to UTF-16";
+  if (!convertUTF8ToUTF16String(fileSystemRepresentation, u16Path)) {
+    error += "Failed to convert path: " + fileSystemRepresentation + " to UTF-16";
     return nullptr;
   }
   HMODULE dlHandle = LoadLibraryW((LPCWSTR)u16Path.data());
